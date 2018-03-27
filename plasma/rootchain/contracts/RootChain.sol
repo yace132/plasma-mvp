@@ -17,13 +17,14 @@ contract RootChain {
      */
     
     event Deposit(address depositor, uint256 amount, uint256 blknum);
+    event ExitStarted(address exitor, uint256 amount, uint256 utxoPos);
 
 
     /*
      * Structs
      */
 
-    struct ExitStarted {
+    struct Exit {
         address exitor;
         uint256 amount;
     }
@@ -123,7 +124,7 @@ contract RootChain {
     }
 
     /**
-     * @dev Starts an exit from an output created by a deposit
+     * @dev Starts an exit from a UTXO created by a deposit
      * @param blknum Number of the deposit block in which this deposit was included
      * @param amount Value of the deposit
      */
@@ -157,6 +158,9 @@ contract RootChain {
 
     /**
      * @dev Calculates the block root for a deposit transaction
+     * @param depositor Address of the depositor
+     * @param amount Amount deposited
+     * @return The root to be used for the deposit block
      */
     function calculateDepositRoot(address depositor, uint256 amount)
         private
@@ -173,6 +177,9 @@ contract RootChain {
 
     /**
      * @dev Inserts an exit into the priority queue
+     * @param utxoPos Position of the UTXO being exited
+     * @param exitor Address of the user who owns this exit
+     * @param amount Amount being exited
      */
     function addExitToQueue(uint256 utxoPos, address exitor, uint256 amount)
         private
@@ -192,7 +199,7 @@ contract RootChain {
             amount: amount
         });
 
-        emit ExitStarted(exitor, utxoPos);
+        emit ExitStarted(exitor, amount, utxoPos);
     }
 
     
@@ -202,6 +209,7 @@ contract RootChain {
 
     /**
      * @dev Returns the full block number of the current deposit block
+     * @return The current deposit block number
      */
     function getCurrentDepositBlockNumber()
         public
@@ -213,6 +221,10 @@ contract RootChain {
 
     /**
      * @dev Calculates a utxoPos from its components
+     * @param blknum Block this UTXO was included in
+     * @param txindex Index of the transaction that created this UTXO
+     * @param oindex Index of the UTXO in the transaction
+     * @return A utxoPos from its components
      */
     function encodeUtxoPos(uint256 blknum, uint256 txindex, uint256 oindex)
         public
@@ -224,6 +236,8 @@ contract RootChain {
 
     /**
      * @dev Decomposes a utxoPos into its parts
+     * @param utxoPos A UTXO position
+     * @return The three components (blknum, txindex, oindex) that make up a utxoPos
      */
     function decodeUtxoPos(uint256 utxoPos)
         public
