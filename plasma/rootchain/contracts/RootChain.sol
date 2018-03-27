@@ -1,8 +1,12 @@
-pragma solidity ^0.4.21;
+pragma solidity ^0.4.19;
 
+import "./ByteUtils.sol";
 import "./Math.sol";
+import "./Merkle.sol";
 import "./PriorityQueue.sol";
+import "./RLP.sol";
 import "./SafeMath.sol";
+import "./Validate.sol";
 
 /**
  * @title RootChain
@@ -11,13 +15,25 @@ import "./SafeMath.sol";
 
 contract RootChain {
     using SafeMath for uint256;
+    using RLP for bytes;
+    using RLP for RLP.RLPItem;
+    using RLP for RLP.Iterator;
+    using Merkle for bytes32;
 
     /*
      * Events
      */
     
-    event Deposit(address depositor, uint256 amount, uint256 blknum);
-    event ExitStarted(address exitor, uint256 amount, uint256 utxoPos);
+    event Deposit(
+        address indexed _depositor,
+        uint256 indexed _blknum,
+        uint256 amount
+    );
+    event ExitStarted(
+        address indexed _exitor,
+        uint256 indexed utxoPos,
+        uint256 amount
+    );
 
 
     /*
@@ -49,6 +65,7 @@ contract RootChain {
     uint256 public childBlockInterval;
     uint256 public currentChildBlock;
     uint256 public currentDepositBlock;
+    uint256 public transactionTimeout;
 
     bytes32[16] zeroHashes;
 
@@ -77,6 +94,7 @@ contract RootChain {
         childBlockInterval = 1000;
         currentChildBlock = childBlockInterval;
         currentDepositBlock = 1;
+        transactionTimeout = 2;
 
         generateZeroHashes();
     }
@@ -120,7 +138,7 @@ contract RootChain {
 
         currentDepositBlock = currentDepositBlock.add(1);
 
-        emit Deposit(msg.sender, msg.value, blknum);
+        Deposit(msg.sender, blknum, msg.value);
     }
 
     /**
@@ -131,11 +149,45 @@ contract RootChain {
     function startDepositExit(uint256 blknum, uint256 amount)
         public
     {
+        require(isDepositBlock(blknum));
+
         bytes32 root = calculateDepositRoot(msg.sender, amount);
         require(root == childChain[blknum].root);
 
         uint256 utxoPos = encodeUtxoPos(blknum, 0, 0);
         addExitToQueue(utxoPos, msg.sender, amount);
+    }
+
+    /**
+     * @dev Starts an exit from a non-deposit UTXO
+     * @param utxoPos Position of the UTXO being exited
+     * @param txBytes RLP encoded transaction that created this UTXO
+     * @param proof A Merkle proof showing that this transaction was actually included at the specified utxoPos
+     * @param sigs Signatures that prove the transaction is valid
+     * @param inputTxBytes1 RLP encoded transaction that created the first input to this UTXO
+     * @param inputProof1 A Merkle proof showing that the first input was included
+     * @param inputSigs1 Signatures that prove the first input is valid
+     * @param inputTxBytes2 RLP encoded transaction that created the second input to this UTXO
+     * @param inputProof2 A Merkle proof showing that the second input was included
+     * @param inputSigs2 Signatures that prove the second input is valid
+     */
+    function startExit(uint256 utxoPos, bytes txBytes, bytes proof, bytes sigs,
+                       bytes inputTxBytes1, bytes inputProof1, bytes inputSigs1,
+                       bytes inputTxBytes2, bytes inputProof2, bytes inputSigs2)
+        public
+    {
+        require(isValidUtxo(utxoPos, txBytes, proof, sigs));
+
+        require(hasValidInputs(txBytes, inputTxBytes1, inputProof1, inputSigs1, inputTxBytes2, inputProof2, inputSigs2));
+
+        uint256 oindex;
+        ( , , oindex) = decodeUtxoPos(utxoPos);
+
+        address exitor;
+        uint256 amount;
+        (exitor, amount) = getOutput(txBytes, oindex);
+
+        addExitToQueue(utxoPos, exitor, amount);
     }
 
 
@@ -199,7 +251,7 @@ contract RootChain {
             amount: amount
         });
 
-        emit ExitStarted(exitor, amount, utxoPos);
+        ExitStarted(exitor, utxoPos, amount);
     }
 
     
@@ -247,6 +299,137 @@ contract RootChain {
         uint256 blknum = utxoPos / 1000000000;
         uint256 txindex = (utxoPos % 1000000000) / 10000;
         uint256 oindex = utxoPos - blknum * 1000000000 - txindex * 10000;
+
         return (blknum, txindex, oindex);
+    }
+
+    /**
+     * @dev Checks that the difference between two blocks is less than the transaction timeout
+     * @param blknum1 First block number to check
+     * @param blknum2 Second block number to check
+     * @return true if the difference is less than the timeout, false otherwise
+     */
+    function isWithinTimeout(uint256 blknum1, uint256 blknum2)
+        public
+        view
+        returns (bool)
+    {
+        return (blknum1 - blknum2) / childBlockInterval <= transactionTimeout;
+    }
+
+    /**
+     * @dev Checks if a block is a deposit block
+     * @param blknum Block number to check
+     * @return true if the block is a deposit block, false otherwise
+     */
+    function isDepositBlock(uint256 blknum)
+        public
+        view
+        returns (bool)
+    {
+        return blknum % childBlockInterval > 0;
+    }
+
+    /**
+     * @dev Returns the owner and amount of an output given the encoded transaction
+     * @param txBytes RLP encoded transaction
+     * @param oindex Which output to return
+     * @return The owner and amount of this output
+     */
+    function getOutput(bytes txBytes, uint256 oindex)
+        public
+        view
+        returns (address, uint256)
+    {
+        RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(12);
+
+        uint256 offset = 2 * oindex;
+        address owner = txList[6 + offset].toAddress();
+        uint256 amount = txList[7 + offset].toUint();
+        return (owner, amount);
+    }
+
+    /**
+     * @dev Checks if a UTXO is valid
+     * @param utxoPos Position of this UTXO
+     * @param txBytes RLP encoded transaction that created this UTXO
+     * @param proof A Merkle proof showing that this UTXO was included at the specified position
+     * @param sigs Signatures to verify
+     * @return true if the UTXO is valid, throws otherwise
+     */
+    function isValidUtxo(uint256 utxoPos, bytes txBytes, bytes proof, bytes sigs)
+        public
+        view
+        returns (bool)
+    {
+        uint256 blknum;
+        uint256 txindex;
+        uint256 oindex;
+        (blknum, txindex, oindex) = decodeUtxoPos(utxoPos);
+
+        return isValidUtxo(blknum, txindex, oindex, txBytes, proof, sigs);
+    }
+
+    /**
+     * @dev Checks if a UTXO is valid
+     * @param blknum Block in which this UTXO was included
+     * @param txindex Index of the transaction that created this UTXO
+     * @param oindex Index of the UTXO in the transaction
+     * @param txBytes RLP encoded transaction that created this UTXO
+     * @param proof A Merkle proof showing that this UTXO was included at the specified position
+     * @param sigs Signatures to verify
+     * @return true if the UTXO is valid, throws otherwise
+     */
+    function isValidUtxo(uint256 blknum, uint256 txindex, uint256 oindex, bytes txBytes, bytes proof, bytes sigs)
+        public
+        view
+        returns (bool)
+    {
+        RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(12);
+
+        require(isWithinTimeout(blknum, txList[11].toUint()));
+        require(msg.sender == txList[6 + 2 * oindex].toAddress());
+        require(Validate.checkSigs(txHash, txList[0].toUint(), txList[3].toUint(), sigs));
+
+        bytes32 txHash = keccak256(txBytes);
+        bytes32 merkleHash = keccak256(txHash, ByteUtils.slice(sigs, 0, 130));
+        bytes32 root = childChain[blknum].root;
+        require(merkleHash.checkMembership(txindex, root, proof));
+
+        return true;
+    }
+
+    /**
+     * @dev Checks if a transaction has valid inputs
+     * @param txBytes RLP encoded transaction to check
+     * @param inputTxBytes1 RLP encoded transaction that created the first input to this transaction
+     * @param inputProof1 A Merkle proof showing that the first input was included
+     * @param inputSigs1 Signatures that prove the first input is valid
+     * @param inputTxBytes2 RLP encoded transaction that created the second input to this transaction
+     * @param inputProof2 A Merkle proof showing that the second input was included
+     * @param inputSigs2 Signatures that prove the second input is valid
+     * @return true if the UTXO is valid, throws otherwise
+     */
+    function hasValidInputs(bytes txBytes,
+                            bytes inputTxBytes1, bytes inputProof1, bytes inputSigs1,
+                            bytes inputTxBytes2, bytes inputProof2, bytes inputSigs2)
+        public
+        view
+        returns (bool)
+    {
+        RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(12);
+
+        uint256 inputBlknum1 = txList[0].toUint();
+        uint256 inputBlknum2 = txList[3].toUint();
+
+        require(inputBlknum1 > 0 && inputBlknum2 > 0);
+
+        require(!isWithinTimeout(currentChildBlock, inputBlknum1));
+        require(isValidUtxo(inputBlknum1, txList[1].toUint(), txList[2].toUint(), inputTxBytes1, inputProof1, inputSigs1));
+
+        require(!isWithinTimeout(currentChildBlock, inputBlknum2));
+        require(isValidUtxo(inputBlknum2, txList[4].toUint(), txList[5].toUint(), inputTxBytes2, inputProof2, inputSigs2));
+
+        return true;
     }
 }
