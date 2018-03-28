@@ -8,6 +8,7 @@ own_directory = os.path.dirname(os.path.realpath(__file__))
 contracts_directory = own_directory + '/contracts'
 output_directory = own_directory + '/build'
 
+
 def get_contracts():
     contracts = {
         file_name: {
@@ -16,8 +17,9 @@ def get_contracts():
     }
     return contracts
 
+
 def compile_all():
-    # Solidity input JSON 
+    # Solidity input JSON
     # Learn more here: https://solidity.readthedocs.io/en/develop/using-the-compiler.html#compiler-input-and-output-json-description
     solc_input = {
         'language': 'Solidity',
@@ -41,11 +43,12 @@ def compile_all():
             with open(contract_data_path, "w+") as contract_data_file:
                 json.dump(contract_data, contract_data_file)
 
+
 def deploy_contract(contract_name, provider=HTTPProvider('http://localhost:8545'), gas=5000000, args=()):
     contract_data_path = output_directory + '/{0}.json'.format(contract_name)
     with open(contract_data_path, 'r') as contract_data_file:
         contract_data = json.load(contract_data_file)
-    
+
     abi = contract_data['abi']
     bytecode = contract_data['evm']['bytecode']['object']
 
