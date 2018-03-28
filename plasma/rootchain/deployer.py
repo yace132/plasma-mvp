@@ -9,22 +9,38 @@ contracts_directory = own_directory + '/contracts'
 output_directory = own_directory + '/build'
 
 
-def get_contracts():
-    contracts = {
-        file_name: {
-            'urls': [os.path.realpath(os.path.join(r, file_name))]
-        } for r, d, f in os.walk(contracts_directory) for file_name in f
+def get_solc_input():
+    """Walks the contract directory and returns a Solidity input dict
+
+    Learn more about Solidity input JSON here: https://goo.gl/7zKBvj
+
+    Returns:
+        dict: A Solidity input JSON object as a dict
+
+    """
+
+    solc_input = {
+        'language': 'Solidity',
+        'sources': {
+            file_name: {
+                'urls': [os.path.realpath(os.path.join(r, file_name))]
+            } for r, d, f in os.walk(contracts_directory) for file_name in f
+        }
     }
-    return contracts
+
+    return solc_input
 
 
 def compile_all():
+    """Compiles all of the contracts in the /contracts directory
+
+    Creates {contract name}.json files in /build that contain
+    the build output for each contract.
+
+    """
+
     # Solidity input JSON
-    # Learn more here: https://solidity.readthedocs.io/en/develop/using-the-compiler.html#compiler-input-and-output-json-description
-    solc_input = {
-        'language': 'Solidity',
-        'sources': get_contracts()
-    }
+    solc_input = get_solc_input()
 
     # Compile the contracts
     compilation_result = compile_standard(solc_input, allow_paths=contracts_directory)
@@ -45,6 +61,19 @@ def compile_all():
 
 
 def deploy_contract(contract_name, provider=HTTPProvider('http://localhost:8545'), gas=5000000, args=()):
+    """Deploys a contract to the given Ethereum network using Web3
+
+    Args:
+        contract_name (str): Name of the contract to deploy. Must already be compiled.
+        provider (HTTPProvider): The Web3 provider to deploy with.
+        gas (int): Amount of gas to use when creating the contract.
+        args (obj): Any additional arguments to include with the contract creation.
+
+    Returns:
+        ConciseContract: A Web3 concise contract instance.
+
+    """
+
     contract_data_path = output_directory + '/{0}.json'.format(contract_name)
     with open(contract_data_path, 'r') as contract_data_file:
         contract_data = json.load(contract_data_file)
