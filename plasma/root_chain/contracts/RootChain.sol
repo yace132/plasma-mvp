@@ -57,6 +57,7 @@ contract RootChain {
 
     mapping (uint256 => ChildBlock) public childChain;
     mapping (uint256 => Exit) public exits;
+    mapping (uint256 => uint256) public deposits;
 
     PriorityQueue exitQueue;
 
@@ -138,19 +139,21 @@ contract RootChain {
 
         currentDepositBlock = currentDepositBlock.add(1);
 
+        deposits[blknum] = msg.value;
+
         Deposit(msg.sender, blknum, msg.value);
     }
 
     /**
      * @dev Starts an exit from a UTXO created by a deposit
      * @param blknum Number of the deposit block in which this deposit was included
-     * @param amount Value of the deposit
      */
-    function startDepositExit(uint256 blknum, uint256 amount)
+    function startDepositExit(uint256 blknum)
         public
     {
         require(isDepositBlock(blknum));
 
+        uint256 amount = deposits[blknum];
         bytes32 root = calculateDepositRoot(msg.sender, amount);
         require(root == childChain[blknum].root);
 
@@ -260,6 +263,19 @@ contract RootChain {
      */
 
     /**
+     * @dev Returns the block at a specified index
+     * @return The components of the specified block
+     */
+    function getBlock(uint256 blknum)
+        public
+        view
+        returns (bytes32, uint256)
+    {
+        ChildBlock memory childBlock = childChain[blknum];
+        return (childBlock.root, childBlock.timestamp);
+    }
+
+    /**
      * @dev Returns the full block number of the current deposit block
      * @return The current deposit block number
      */
@@ -327,7 +343,7 @@ contract RootChain {
         view
         returns (bool)
     {
-        return blknum % childBlockInterval > 0;
+        return (blknum > 0) && (blknum % childBlockInterval > 0);
     }
 
     /**
@@ -386,12 +402,12 @@ contract RootChain {
         returns (bool)
     {
         RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(12);
+        bytes32 txHash = keccak256(txBytes);
 
         require(isWithinTimeout(blknum, txList[11].toUint()));
         require(msg.sender == txList[6 + 2 * oindex].toAddress());
         require(Validate.checkSigs(txHash, txList[0].toUint(), txList[3].toUint(), sigs));
 
-        bytes32 txHash = keccak256(txBytes);
         bytes32 merkleHash = keccak256(txHash, ByteUtils.slice(sigs, 0, 130));
         bytes32 root = childChain[blknum].root;
         require(merkleHash.checkMembership(txindex, root, proof));
@@ -422,14 +438,27 @@ contract RootChain {
         uint256 inputBlknum1 = txList[0].toUint();
         uint256 inputBlknum2 = txList[3].toUint();
 
-        require(inputBlknum1 > 0 && inputBlknum2 > 0);
+        require(inputBlknum1 > 0 || inputBlknum2 > 0);
 
-        require(!isWithinTimeout(currentChildBlock, inputBlknum1));
-        require(isValidUtxo(inputBlknum1, txList[1].toUint(), txList[2].toUint(), inputTxBytes1, inputProof1, inputSigs1));
+        uint256 inputAmount1;
+        uint256 inputAmount2;
+        
+        if (!isDepositBlock(inputBlknum1) && (inputBlknum1 > 0)) {
+            require(!isWithinTimeout(currentChildBlock, inputBlknum1));
+            require(isValidUtxo(inputBlknum1, txList[1].toUint(), txList[2].toUint(), inputTxBytes1, inputProof1, inputSigs1));
+            ( , inputAmount1) = getOutput(inputTxBytes1, txList[2].toUint());
+        } else {
+            inputAmount1 = deposits[inputBlknum1];
+        }
 
-        require(!isWithinTimeout(currentChildBlock, inputBlknum2));
-        require(isValidUtxo(inputBlknum2, txList[4].toUint(), txList[5].toUint(), inputTxBytes2, inputProof2, inputSigs2));
+        if (!isDepositBlock(inputBlknum2) && (inputBlknum2 > 0)) {
+            require(!isWithinTimeout(currentChildBlock, inputBlknum2));
+            require(isValidUtxo(inputBlknum2, txList[4].toUint(), txList[5].toUint(), inputTxBytes2, inputProof2, inputSigs2));
+            ( , inputAmount2) = getOutput(inputTxBytes2, txList[5].toUint());
+        } else {
+            inputAmount2 = deposits[inputBlknum2];
+        }
 
-        return true;
+        return inputAmount1 + inputAmount2 == txList[7].toUint() + txList[9].toUint();
     }
 }

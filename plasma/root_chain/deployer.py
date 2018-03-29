@@ -60,6 +60,27 @@ def compile_all():
                 json.dump(contract_data, contract_data_file)
 
 
+def get_contract_data(contract_name):
+    """Returns the contract data for a given contract
+
+    Args:
+        contract_name (str): Name of the contract to return.
+
+    Returns:
+        str, str: ABI and bytecode of the contract
+
+    """
+
+    contract_data_path = output_directory + '/{0}.json'.format(contract_name)
+    with open(contract_data_path, 'r') as contract_data_file:
+        contract_data = json.load(contract_data_file)
+
+    abi = contract_data['abi']
+    bytecode = contract_data['evm']['bytecode']['object']
+
+    return abi, bytecode
+
+
 def deploy_contract(contract_name, provider=HTTPProvider('http://localhost:8545'), gas=5000000, args=()):
     """Deploys a contract to the given Ethereum network using Web3
 
@@ -74,12 +95,7 @@ def deploy_contract(contract_name, provider=HTTPProvider('http://localhost:8545'
 
     """
 
-    contract_data_path = output_directory + '/{0}.json'.format(contract_name)
-    with open(contract_data_path, 'r') as contract_data_file:
-        contract_data = json.load(contract_data_file)
-
-    abi = contract_data['abi']
-    bytecode = contract_data['evm']['bytecode']['object']
+    abi, bytecode = get_contract_data(contract_name)
 
     w3 = Web3(provider)
     contract = w3.eth.contract(abi=abi, bytecode=bytecode)
