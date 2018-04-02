@@ -34,6 +34,10 @@ contract RootChain {
         uint256 indexed utxoPos,
         uint256 amount
     );
+    event Withdrawal(
+        address indexed _recipient,
+        uint256 amount
+    );
 
 
     /*
@@ -58,6 +62,7 @@ contract RootChain {
     mapping (uint256 => ChildBlock) public childChain;
     mapping (uint256 => Exit) public exits;
     mapping (uint256 => uint256) public deposits;
+    mapping (address => uint256) public balances;
 
     PriorityQueue exitQueue;
 
@@ -179,7 +184,7 @@ contract RootChain {
                        bytes inputTxBytes2, bytes inputProof2, bytes inputSigs2)
         public
     {
-        require(isValidUtxo(utxoPos, txBytes, proof, sigs));
+        require(isValidUtxo(msg.sender, utxoPos, txBytes, proof, sigs));
 
         require(hasValidInputs(txBytes, inputTxBytes1, inputProof1, inputSigs1, inputTxBytes2, inputProof2, inputSigs2));
 
@@ -191,6 +196,73 @@ contract RootChain {
         (exitor, amount) = getOutput(txBytes, oindex);
 
         addExitToQueue(utxoPos, exitor, amount);
+    }
+
+    /**
+     * @dev Allows a user to challenge an exit
+     * @param exitUtxoPos Position of the faulty exit
+     * @param challengeUtxoPos Position of the UTXO being used to challenge
+     * @param challengeTxBytes RLP encoded transaction that created the challenge UTXO
+     * @param challengeProof A Merkle proof showing that the challenging transaction was included
+     * @param challengeSigs Signatures that prove the challenging transaction is valid
+     */
+    function challengeExit(uint256 exitUtxoPos, uint256 challengeUtxoPos,
+                           bytes challengeTxBytes, bytes challengeProof, bytes challengeSigs)
+        public
+    {
+        RLP.RLPItem[] memory txList = challengeTxBytes.toRLPItem().toList(14);
+
+        bool isInput1 = encodeUtxoPos(txList[0].toUint(), txList[1].toUint(), txList[2].toUint()) == exitUtxoPos;
+        bool isInput2 = encodeUtxoPos(txList[3].toUint(), txList[4].toUint(), txList[5].toUint()) == exitUtxoPos;
+        require(isInput1 || isInput2);
+
+        require(isValidUtxo(0x0, challengeUtxoPos, challengeTxBytes, challengeProof, challengeSigs));
+
+        delete exits[exitUtxoPos].exitor;
+    }
+
+    /**
+     * @dev Finalizes exits in priority order
+     */
+    function finalizeExits()
+        public
+    {
+        uint256 twoWeekOldTimestamp = block.timestamp.sub(2 weeks);
+
+        uint256 utxoPos;
+        uint256 timestamp;
+        (utxoPos, timestamp) = getNextExit();
+    
+        Exit memory currentExit = exits[utxoPos];
+        while (timestamp < twoWeekOldTimestamp && exitQueue.currentSize() > 0) {
+            currentExit = exits[utxoPos];
+
+            if (currentExit.exitor != 0x0) {
+                if(!currentExit.exitor.send(currentExit.amount)) {
+                    balances[currentExit.exitor] += currentExit.amount;
+                }
+            }
+
+            exitQueue.delMin();
+            delete exits[utxoPos].exitor;
+
+            (utxoPos, timestamp) = getNextExit();
+        }
+    }
+
+    /**
+     * @dev Allows a user to withdraw any available balance
+     */
+    function withdraw()
+        public
+    {
+        uint256 balance = balances[msg.sender];
+        require(balance > 0);
+
+        delete balances[msg.sender];
+        msg.sender.transfer(balance);
+
+        Withdrawal(msg.sender, balance);
     }
 
 
@@ -357,7 +429,7 @@ contract RootChain {
         view
         returns (address, uint256)
     {
-        RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(12);
+        RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(14);
 
         uint256 offset = 2 * oindex;
         address owner = txList[6 + offset].toAddress();
@@ -366,6 +438,21 @@ contract RootChain {
     }
 
     /**
+     * @dev Returns the amount of an output given the encoded transaction
+     * @param txBytes RLP encoded transaction
+     * @param oindex Which output to return
+     * @return The amount of this output
+     */
+    function getOutputAmount(bytes txBytes, uint256 oindex)
+        public
+        view
+        returns (uint256)
+    {
+        uint256 amount;
+        ( , amount) = getOutput(txBytes, oindex);
+        return amount;
+    }
+    /**
      * @dev Checks if a UTXO is valid
      * @param utxoPos Position of this UTXO
      * @param txBytes RLP encoded transaction that created this UTXO
@@ -373,7 +460,7 @@ contract RootChain {
      * @param sigs Signatures to verify
      * @return true if the UTXO is valid, throws otherwise
      */
-    function isValidUtxo(uint256 utxoPos, bytes txBytes, bytes proof, bytes sigs)
+    function isValidUtxo(address owner, uint256 utxoPos, bytes txBytes, bytes proof, bytes sigs)
         public
         view
         returns (bool)
@@ -383,7 +470,7 @@ contract RootChain {
         uint256 oindex;
         (blknum, txindex, oindex) = decodeUtxoPos(utxoPos);
 
-        return isValidUtxo(blknum, txindex, oindex, txBytes, proof, sigs);
+        return isValidUtxo(owner, blknum, txindex, oindex, txBytes, proof, sigs);
     }
 
     /**
@@ -396,17 +483,19 @@ contract RootChain {
      * @param sigs Signatures to verify
      * @return true if the UTXO is valid, throws otherwise
      */
-    function isValidUtxo(uint256 blknum, uint256 txindex, uint256 oindex, bytes txBytes, bytes proof, bytes sigs)
+    function isValidUtxo(address owner, uint256 blknum, uint256 txindex, uint256 oindex, bytes txBytes, bytes proof, bytes sigs)
         public
         view
         returns (bool)
     {
-        RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(12);
+        RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(14);
         bytes32 txHash = keccak256(txBytes);
 
         require(isWithinTimeout(blknum, txList[11].toUint()));
-        require(msg.sender == txList[6 + 2 * oindex].toAddress());
-        require(Validate.checkSigs(txHash, txList[0].toUint(), txList[3].toUint(), sigs));
+        if (owner != 0x0) {
+            require(owner == txList[6 + 2 * oindex].toAddress());
+        }
+        require(Validate.checkSigs(txHash, txList[0].toUint(), txList[12].toAddress(), txList[3].toUint(), txList[13].toAddress(), sigs));
 
         bytes32 merkleHash = keccak256(txHash, ByteUtils.slice(sigs, 0, 130));
         bytes32 root = childChain[blknum].root;
@@ -433,32 +522,46 @@ contract RootChain {
         view
         returns (bool)
     {
-        RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(12);
+        RLP.RLPItem[] memory txList = txBytes.toRLPItem().toList(14);
 
         uint256 inputBlknum1 = txList[0].toUint();
         uint256 inputBlknum2 = txList[3].toUint();
 
         require(inputBlknum1 > 0 || inputBlknum2 > 0);
 
-        uint256 inputAmount1;
-        uint256 inputAmount2;
+        uint256 inputAmount;
         
         if (!isDepositBlock(inputBlknum1) && (inputBlknum1 > 0)) {
             require(!isWithinTimeout(currentChildBlock, inputBlknum1));
-            require(isValidUtxo(inputBlknum1, txList[1].toUint(), txList[2].toUint(), inputTxBytes1, inputProof1, inputSigs1));
-            ( , inputAmount1) = getOutput(inputTxBytes1, txList[2].toUint());
+            require(isValidUtxo(0x0, inputBlknum1, txList[1].toUint(), txList[2].toUint(), inputTxBytes1, inputProof1, inputSigs1));
+            inputAmount += getOutputAmount(inputTxBytes1, txList[2].toUint());
         } else {
-            inputAmount1 = deposits[inputBlknum1];
+            inputAmount += deposits[inputBlknum1];
         }
 
         if (!isDepositBlock(inputBlknum2) && (inputBlknum2 > 0)) {
             require(!isWithinTimeout(currentChildBlock, inputBlknum2));
-            require(isValidUtxo(inputBlknum2, txList[4].toUint(), txList[5].toUint(), inputTxBytes2, inputProof2, inputSigs2));
-            ( , inputAmount2) = getOutput(inputTxBytes2, txList[5].toUint());
+            require(isValidUtxo(0x0, inputBlknum2, txList[4].toUint(), txList[5].toUint(), inputTxBytes2, inputProof2, inputSigs2));
+            inputAmount += getOutputAmount(inputTxBytes2, txList[5].toUint());
         } else {
-            inputAmount2 = deposits[inputBlknum2];
+            inputAmount += deposits[inputBlknum2];
         }
 
-        return inputAmount1 + inputAmount2 == txList[7].toUint() + txList[9].toUint();
+        return inputAmount == txList[7].toUint() + txList[9].toUint();
+    }
+
+    /**
+     * @dev Returns the exit with the highest priority
+     * @return utxoPos and timestamp of the highest priority exit
+     */
+    function getNextExit()
+        public
+        view
+        returns (uint256, uint256)
+    {
+        uint256 priority = exitQueue.getMin();
+        uint256 utxoPos = uint256(uint128(priority));
+        uint256 timestamp = priority >> 128;
+        return (utxoPos, timestamp);
     }
 }
