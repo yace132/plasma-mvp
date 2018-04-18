@@ -48,11 +48,6 @@ contract RootChain {
         uint256 amount;
     }
 
-    // struct childBlock {
-    //     bytes32 root;
-    //     uint256 created_at;
-    // }
-
     /*
      *  Modifiers
      */
