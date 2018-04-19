@@ -101,10 +101,8 @@ contract RootChain {
         uint256 blknum = depositPos / 1000000000;
         // Makes sure that deposit position is actually a deposit
         require(blknum % childBlockInterval != 0);
-        bytes32 root = childChain[blknum];
         bytes32 depositHash = keccak256(msg.sender, amount);
-        bytes32 depositRoot = keccak256(depositHash, createdAt);
-        require(root == depositRoot);
+        require(checkRoot(blknum, depositHash, createdAt));
         addExitToQueue(depositPos, msg.sender, amount, createdAt);
     }
 
@@ -124,10 +122,9 @@ contract RootChain {
         address exitor = txList[6 + 2 * oindex].toAddress(); 
         
         require(msg.sender == exitor);
-        bytes32 root = childChain[blknum];
-        require(root == keccak256(blockRoot, createdAt));
+        require(checkRoot(blknum, blockRoot, createdAt));
         bytes32 merkleHash = keccak256(keccak256(txBytes), ByteUtils.slice(sigs, 0, 130));
-        require(Validate.checkSigs(keccak256(txBytes), blockRoot, txList[0].toUint(), txList[3].toUint(), sigs));
+        require(Validate.checkSigs(keccak256(txBytes), blockRoot, txList[3].toUint(), sigs));
         require(merkleHash.checkMembership(txindex, blockRoot, proof));
         addExitToQueue(utxoPos, exitor, amount, createdAt);
     }

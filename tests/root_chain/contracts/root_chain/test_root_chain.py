@@ -153,7 +153,7 @@ def test_challenge_exit(t, u, root_chain, assert_tx_failed):
     root = merkle.root
     child_blknum = root_chain.currentChildBlock()
     root_chain.submitBlock(root)
-    confirmSig = confirm_tx(tx4, merkle.root, key)
+    confirmSig = confirm_tx(tx4, root, key)
     sigs = tx4.sig1 + tx4.sig2
     utxo_pos4 = child_blknum * 1000000000 + 10000 * 0 + 0
     oindex1 = 0
