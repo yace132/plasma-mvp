@@ -29,7 +29,7 @@ contract RootChain {
     /*
      *  Storage
      */
-    mapping(uint256 => childBlock) public childChain;
+    mapping(uint256 => bytes32) public childChain;
     mapping(uint256 => exit) public exits;
     PriorityQueue exitsQueue;
     address public authority;
@@ -46,11 +46,6 @@ contract RootChain {
     struct exit {
         address owner;
         uint256 amount;
-    }
-
-    struct childBlock {
-        bytes32 root;
-        uint256 created_at;
     }
 
     /*
@@ -81,10 +76,7 @@ contract RootChain {
         public
         isAuthority
     {
-        childChain[currentChildBlock] = childBlock({
-            root: root,
-            created_at: block.timestamp
-        });
+        childChain[currentChildBlock] = keccak256(root, block.timestamp);
         currentChildBlock = currentChildBlock.add(childBlockInterval);
         currentDepositBlock = 1;
     }
@@ -96,26 +88,22 @@ contract RootChain {
         payable
     {
         require(currentDepositBlock < childBlockInterval);
-        bytes32 root = keccak256(msg.sender, msg.value);
+        bytes32 depositHash = keccak256(msg.sender, msg.value);
         uint256 depositBlock = getDepositBlock();
-        childChain[depositBlock] = childBlock({
-            root: root,
-            created_at: block.timestamp
-        });
+        childChain[depositBlock] = keccak256(depositHash, block.timestamp);
         currentDepositBlock = currentDepositBlock.add(1);
         Deposit(msg.sender, msg.value, depositBlock);
     }
 
-    function startDepositExit(uint256 depositPos, uint256 amount)
+    function startDepositExit(uint256 depositPos, uint256 amount, uint256 createdAt)
         public
     {
         uint256 blknum = depositPos / 1000000000;
         // Makes sure that deposit position is actually a deposit
         require(blknum % childBlockInterval != 0);
-        bytes32 root = childChain[blknum].root;
         bytes32 depositHash = keccak256(msg.sender, amount);
-        require(root == depositHash);
-        addExitToQueue(depositPos, msg.sender, amount);
+        require(checkRoot(blknum, depositHash, createdAt));
+        addExitToQueue(depositPos, msg.sender, amount, createdAt);
     }
 
     // @dev Starts to exit a specified utxo
@@ -123,7 +111,7 @@ contract RootChain {
     // @param txBytes The transaction being exited in RLP bytes format
     // @param proof Proof of the exiting transactions inclusion for the block specified by utxoPos
     // @param sigs Both transaction signatures and confirmations signatures used to verify that the exiting transaction has been confirmed
-    function startExit(uint256 utxoPos, bytes txBytes, bytes proof, bytes sigs)
+    function startExit(uint256 utxoPos, bytes txBytes, bytes proof, bytes sigs, bytes32 blockRoot, uint256 createdAt)
         public
     {
         var txList = txBytes.toRLPItem().toList(11); 
@@ -134,19 +122,19 @@ contract RootChain {
         address exitor = txList[6 + 2 * oindex].toAddress(); 
         
         require(msg.sender == exitor);
-        bytes32 root = childChain[blknum].root; 
+        require(checkRoot(blknum, blockRoot, createdAt));
         bytes32 merkleHash = keccak256(keccak256(txBytes), ByteUtils.slice(sigs, 0, 130));
-        require(Validate.checkSigs(keccak256(txBytes), root, txList[0].toUint(), txList[3].toUint(), sigs));
-        require(merkleHash.checkMembership(txindex, root, proof));
-        addExitToQueue(utxoPos, exitor, amount);
+        require(Validate.checkSigs(keccak256(txBytes), blockRoot, txList[3].toUint(), sigs));
+        require(merkleHash.checkMembership(txindex, blockRoot, proof));
+        addExitToQueue(utxoPos, exitor, amount, createdAt);
     }
 
     // Priority is a given utxos position in the exit priority queue
-    function addExitToQueue(uint256 utxoPos, address exitor, uint256 amount)
+    function addExitToQueue(uint256 utxoPos, address exitor, uint256 amount, uint256 created_at)
         private
     {
         uint256 blknum = utxoPos / 1000000000;
-        uint256 priority = Math.max(childChain[blknum].created_at, block.timestamp - 1 weeks);
+        uint256 priority = Math.max(created_at, block.timestamp - 1 weeks);
         priority = priority << 128 | utxoPos;
         require(amount > 0);
         require(exits[utxoPos].amount == 0);
@@ -165,19 +153,19 @@ contract RootChain {
     // @param proof Proof of inclusion for the transaction used to challenge
     // @param sigs Signatures for the transaction used to challenge
     // @param confirmationSig The confirmation signature for the transaction used to challenge
-    function challengeExit(uint256 cUtxoPos, uint256 eUtxoIndex, bytes txBytes, bytes proof, bytes sigs, bytes confirmationSig)
+    function challengeExit(uint256 cUtxoPos, uint256 eUtxoIndex, bytes txBytes, bytes proof, bytes sigs, bytes confirmationSig, bytes32 blockRoot, uint256 createdAt)
         public
     {
         uint256 eUtxoPos = getUtxoPos(txBytes, eUtxoIndex);
         uint256 txindex = (cUtxoPos % 1000000000) / 10000;
-        bytes32 root = childChain[cUtxoPos / 1000000000].root;
+        require(checkRoot(cUtxoPos / 1000000000, blockRoot, createdAt));
         var txHash = keccak256(txBytes);
-        var confirmationHash = keccak256(txHash, root);
+        var confirmationHash = keccak256(txHash, blockRoot);
         var merkleHash = keccak256(txHash, sigs);
         address owner = exits[eUtxoPos].owner;
 
         require(owner == ECRecovery.recover(confirmationHash, confirmationSig));
-        require(merkleHash.checkMembership(txindex, root, proof));
+        require(merkleHash.checkMembership(txindex, blockRoot, proof));
         // Clear as much as possible from succesful challenge
         delete exits[eUtxoPos].owner;
     }
@@ -204,14 +192,14 @@ contract RootChain {
     /* 
      *  Constant functions
      */
-    function getChildChain(uint256 blockNumber)
-        public
+    function checkRoot(uint256 blknum, bytes32 blockRoot, uint256 createdAt)
+        private
         view
-        returns (bytes32, uint256)
+        returns (bool)
     {
-        return (childChain[blockNumber].root, childChain[blockNumber].created_at);
+        return (childChain[blknum] == keccak256(blockRoot, createdAt));
     }
-
+    
     function getDepositBlock()
         public
         view
