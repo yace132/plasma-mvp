@@ -5,7 +5,6 @@
 env/
 .vscode/
 .DS_Store
-contract_data/
 
 # Distribution
 dist/

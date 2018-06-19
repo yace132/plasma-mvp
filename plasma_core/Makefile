@@ -13,7 +13,6 @@ clean: clean-build clean-pyc
 clean-build:
 	rm -fr build/
 	rm -fr dist/
-	rm -fr contract_data/
 	rm -fr *.egg-info
 
 clean-pyc:
@@ -24,9 +23,8 @@ clean-pyc:
 
 .PHONY: lint
 lint:
-	flake8 deployer testlang tests
+	flake8 plasma tests
 
 .PHONY: test
 test:
 	python -m pytest
-	rm -fr .pytest_cache
