@@ -1,4 +1,5 @@
 from ethereum import utils
+from plasma_core.plasma.constants import NULL_SIGNATURE
 
 
 def sign(data, key):
@@ -17,3 +18,7 @@ def get_signer(data, signature):
     s = utils.bytes_to_int(signature[32:64])
     pub = utils.ecrecover_to_pub(data, v, r, s)
     return utils.sha3(pub)[-20:]
+
+
+def get_null_sig_list(length):
+    return ([NULL_SIGNATURE] * length)[:]
