@@ -15,6 +15,7 @@ clean-build:
 	rm -fr dist/
 	rm -fr contract_data/
 	rm -fr *.egg-info
+	rm -fr .pytest_cache
 
 clean-pyc:
 	find . -name '*.pyc' -exec rm -f {} +
