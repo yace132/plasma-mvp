@@ -1,14 +1,10 @@
 pragma solidity ^0.4.0;
 
+import "./BaseRootChain.sol";
 import "./Math.sol";
-import "./Merkle.sol";
 import "./PriorityQueue.sol";
-import "./PlasmaCore.sol";
 
-contract RootChain {
-    using PlasmaCore for bytes;
-    using PlasmaCore for uint256;
-
+contract RootChain is BaseRootChain {
     /*
      * Storage
      */
@@ -19,68 +15,10 @@ contract RootChain {
     // WARNING: These placeholder bond values are entirely arbitrary.
     uint256 public exitBond = 31415926535 wei;
 
-    address public operator;
-
     uint256 public nextChildBlock;
     uint256 public nextDepositBlock;
 
-    mapping (uint256 => Block) public blocks;
-    mapping (uint256 => Exit) public exits;
-
-    PriorityQueue exitQueue;
-
     bytes32[16] zeroHashes;
-
-    struct Block {
-        bytes32 root;
-        uint256 timestamp;
-    }
-
-    struct Exit {
-        address owner;
-        uint256 amount;
-    }
-
-
-    /*
-     * Events
-     */
-    
-    event BlockSubmitted(
-        uint256 number,
-        bytes32 root
-    );
-
-    event DepositCreated(
-        address indexed depositor,
-        uint256 amount
-    );
-
-    event ExitStarted(
-        address indexed owner,
-        uint256 outputId,
-        uint256 amount
-    );
-
-    event ExitBlocked(
-        address indexed challenger,
-        uint256 outputId
-    );
-
-
-    /*
-     * Modifiers
-     */
-
-    modifier onlyOperator() {
-        require(msg.sender == operator);
-        _;
-    }
-
-    modifier onlyWithValue(uint256 _value) {
-        require(msg.value == _value);
-        _;
-    }
 
     
     /*
@@ -171,18 +109,6 @@ contract RootChain {
         nextDepositBlock++;
 
         emit DepositCreated(decodedTx.outputs[0].owner, msg.value);
-    }
-
-    /**
-     * @dev Calculates the next deposit block.
-     * @return Next deposit block number.
-     */
-    function getDepositBlockNumber()
-        public
-        view
-        returns (uint256)
-    {
-        return nextChildBlock - CHILD_BLOCK_INTERVAL + nextDepositBlock;
     }
 
     /**
@@ -294,32 +220,22 @@ contract RootChain {
         }
     }
 
+    /**
+     * @dev Calculates the next deposit block.
+     * @return Next deposit block number.
+     */
+    function getDepositBlockNumber()
+        public
+        view
+        returns (uint256)
+    {
+        return nextChildBlock - CHILD_BLOCK_INTERVAL + nextDepositBlock;
+    }
+
 
     /*
      * Internal functions
      */
-
-    /**
-     * @dev Checks that a given transaction was included in a block and created a specified output.
-     * @param _tx RLP encoded transaction to verify.
-     * @param _transactionId Unique transaction identifier for the encoded transaction.
-     * @param _txInclusionProof Proof that the transaction was in a block.
-     * @return True if the transaction was in a block and created the output. False otherwise.
-     */
-    function _transactionIncluded(bytes _tx, uint256 _transactionId, bytes _txInclusionProof)
-        internal
-        view
-        returns (bool)
-    {
-        // Decode the transaction ID.
-        uint256 blknum = _transactionId.getBlknum();
-        uint256 txindex = _transactionId.getTxindex();
-
-        // Check that the transaction was correctly included.
-        bytes32 blockRoot = blocks[blknum].root;
-        bytes32 leafHash = keccak256(_tx);
-        return Merkle.checkMembership(leafHash, txindex, blockRoot, _txInclusionProof);
-    }
 
     /**
      * @dev Given an output ID, determines when it's exitable, if it were to be exited now.
