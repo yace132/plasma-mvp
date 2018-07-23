@@ -189,10 +189,10 @@ contract RootChain {
      * @param _sigs Both transaction signatures and confirmations signatures used to verify that the exiting transaction has been confirmed.
      */
     function startExit(
-        uint256 _utxoPos,
-        bytes _txBytes,
-        bytes _proof,
-        bytes _sigs
+        uint256 _utxoPos,	// 要提領的 UTXO 在 childchain 的哪裡(第幾個block, 交易的編號或雜湊, 第幾個output)
+        bytes _txBytes,		// 交易的資料
+        bytes _proof,		//
+        bytes _sigs			// 交易的簽章和收據
     )
         public
     {
@@ -200,16 +200,24 @@ contract RootChain {
         uint256 txindex = (_utxoPos % 1000000000) / 10000;
         uint256 oindex = _utxoPos - blknum * 1000000000 - txindex * 10000; 
 
-        // Check the sender owns this UTXO.
-        var exitingTx = _txBytes.createExitingTx(oindex);
+        //1 Check the sender owns this UTXO.
+        var exitingTx = _txBytes.createExitingTx(oindex); // 轉換交易資料的格式
         require(msg.sender == exitingTx.exitor);
 
-        // Check the transaction was included in the chain and is correctly signed.
+        //2 Check the transaction was included in the chain and is correctly signed.
         bytes32 root = childChain[blknum].root; 
-        bytes32 merkleHash = keccak256(keccak256(_txBytes), ByteUtils.slice(_sigs, 0, 130));
+        bytes32 merkleHash = keccak256(keccak256(_txBytes), ByteUtils.slice(_sigs, 0, 130));// 收據
+        
         require(Validate.checkSigs(keccak256(_txBytes), root, exitingTx.inputCount, _sigs));
+        // 驗交易跟收據的簽章 ( 收據是簽章的一部份 )
+        // 可參考 Validate.sol
+        
         require(merkleHash.checkMembership(txindex, root, _proof));
-
+        /* 
+        驗 merkle tree
+        證明即為merkle tree 的路徑
+        可參考 Merkle.sol */
+        
         addExitToQueue(_utxoPos, exitingTx.exitor, exitingTx.token, exitingTx.amount, childChain[blknum].timestamp);
     }
 
