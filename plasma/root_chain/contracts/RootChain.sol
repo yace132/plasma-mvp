@@ -208,11 +208,12 @@ contract RootChain {
         //2 Check the transaction was included in the chain and is correctly signed.
         bytes32 root = childChain[blknum].root; 
         bytes32 merkleHash = keccak256(keccak256(_txBytes), ByteUtils.slice(_sigs, 0, 130));// merkle tree 的葉子
-        
         require(Validate.checkSigs(keccak256(_txBytes), root, exitingTx.inputCount, _sigs));
         // 驗交易跟收據的簽章 ( 收據是簽章的一部份 )
         // 可參考 Validate.sol
+        // 接收者Bob只要拿自己的收據就能領錢
         
+        //4 確認交易有出現在該區塊
         require(merkleHash.checkMembership(txindex, root, _proof));
         /* 
         驗 merkle tree
