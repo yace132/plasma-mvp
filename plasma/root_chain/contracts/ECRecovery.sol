@@ -1,4 +1,4 @@
-pragma solidity ^0.4.0;
+pragma solidity ^0.5.0;
 
 
 /**
@@ -16,14 +16,14 @@ library ECRecovery {
      * @param _sig Signature over the signed message.
      * @return Address that signed the hash.
      */
-    function recover(bytes32 _hash, bytes _sig) internal pure returns (address) {
+    function recover(bytes32 _hash, bytes memory _sig) internal pure returns (address) {
         bytes32 r;
         bytes32 s;
         uint8 v;
 
         // Check the signature length.
         if (_sig.length != 65) {
-            return address(0);
+            revert("Invalid signature length.");
         }
 
         // Divide the signature in v, r, and s variables.
@@ -40,7 +40,7 @@ library ECRecovery {
 
         // If the version is correct return the signer address.
         if (v != 27 && v != 28) {
-            return address(0);
+            revert("Invalid signature version.");
         } else {
             return ecrecover(_hash, v, r, s);
         }

@@ -1,4 +1,4 @@
-pragma solidity ^0.4.0;
+pragma solidity ^0.5.0;
 
 import "./SafeMath.sol";
 import "./Math.sol";
@@ -50,6 +50,7 @@ contract RootChain {
      * Storage
      */
 
+    uint256 public constant EXIT_BOND = 1234567890;
     uint256 public constant CHILD_BLOCK_INTERVAL = 1000;
 
     address public operator;
@@ -58,17 +59,17 @@ contract RootChain {
     uint256 public currentDepositBlock;
     uint256 public currentFeeExit;
 
-    mapping (uint256 => ChildBlock) public childChain;
+    mapping (uint256 => PlasmaBlock) public plasmaBlocks;
     mapping (uint256 => Exit) public exits;
     mapping (address => address) public exitsQueues;
 
     struct Exit {
-        address owner;
+        address payable owner;
         address token;
         uint256 amount;
     }
 
-    struct ChildBlock {
+    struct PlasmaBlock {
         bytes32 root;
         uint256 timestamp;
     }
@@ -79,7 +80,12 @@ contract RootChain {
      */
 
     modifier onlyOperator() {
-        require(msg.sender == operator);
+        require(msg.sender == operator, "Sender must be operator.");
+        _;
+    }
+
+    modifier onlyWithValue(uint256 _value) {
+        require(msg.value == _value, "Invalid attached value.");
         _;
     }
 
@@ -88,9 +94,7 @@ contract RootChain {
      * Constructor
      */
 
-    constructor()
-        public
-    {
+    constructor() public {
         operator = msg.sender;
         currentChildBlock = CHILD_BLOCK_INTERVAL;
         currentDepositBlock = 1;
@@ -109,11 +113,8 @@ contract RootChain {
      * @dev Allows Plasma chain operator to submit block root.
      * @param _root The root of a child chain block.
      */
-    function submitBlock(bytes32 _root)
-        public
-        onlyOperator
-    {   
-        childChain[currentChildBlock] = ChildBlock({
+    function submitBlock(bytes32 _root) public onlyOperator {
+        plasmaBlocks[currentChildBlock] = PlasmaBlock({
             root: _root,
             timestamp: block.timestamp
         });
@@ -128,16 +129,13 @@ contract RootChain {
     /**
      * @dev Allows anyone to deposit funds into the Plasma chain.
      */
-    function deposit()
-        public
-        payable
-    {
+    function deposit() public payable {
         // Only allow up to CHILD_BLOCK_INTERVAL deposits per child block.
-        require(currentDepositBlock < CHILD_BLOCK_INTERVAL);
+        require(currentDepositBlock < CHILD_BLOCK_INTERVAL, "Deposit limit reached.");
 
-        bytes32 root = keccak256(msg.sender, address(0), msg.value);
+        bytes32 root = keccak256(abi.encodePacked(msg.sender, address(0), msg.value));
         uint256 depositBlock = getDepositBlock();
-        childChain[depositBlock] = ChildBlock({
+        plasmaBlocks[depositBlock] = PlasmaBlock({
             root: root,
             timestamp: block.timestamp
         });
@@ -152,20 +150,24 @@ contract RootChain {
      * @param _token Token type to deposit.
      * @param _amount Deposit amount.
      */
-    function startDepositExit(uint256 _depositPos, address _token, uint256 _amount)
-        public
+    function startDepositExit(
+        uint256 _depositPos,
+        address _token,
+        uint256 _amount
+    )
+        public payable onlyWithValue(EXIT_BOND)
     {
         uint256 blknum = _depositPos / 1000000000;
 
         // Check that the given UTXO is a deposit.
-        require(blknum % CHILD_BLOCK_INTERVAL != 0);
+        require(blknum % CHILD_BLOCK_INTERVAL != 0, "Referenced block must be a deposit block.");
 
         // Validate the given owner and amount.
-        bytes32 root = childChain[blknum].root;
-        bytes32 depositHash = keccak256(msg.sender, _token, _amount);
-        require(root == depositHash);
+        bytes32 root = plasmaBlocks[blknum].root;
+        bytes32 depositHash = keccak256(abi.encodePacked(msg.sender, _token, _amount));
+        require(root == depositHash, "Root hash must match deposit hash.");
 
-        addExitToQueue(_depositPos, msg.sender, _token, _amount, childChain[blknum].timestamp);
+        addExitToQueue(_depositPos, msg.sender, _token, _amount, plasmaBlocks[blknum].timestamp);
     }
 
     /**
@@ -173,10 +175,7 @@ contract RootChain {
      * @param _token Token to withdraw.
      * @param _amount Amount in fees to withdraw.
      */
-    function startFeeExit(address _token, uint256 _amount)
-        public
-        onlyOperator
-    {
+    function startFeeExit(address _token, uint256 _amount) public payable onlyOperator onlyWithValue(EXIT_BOND) {
         addExitToQueue(currentFeeExit, msg.sender, _token, _amount, block.timestamp + 1);
         currentFeeExit = currentFeeExit.add(1);
     }
@@ -189,36 +188,34 @@ contract RootChain {
      * @param _sigs Both transaction signatures and confirmations signatures used to verify that the exiting transaction has been confirmed.
      */
     function startExit(
-        uint256 _utxoPos,	// 要提領的 UTXO 在 childchain 的哪裡(第幾個block, 交易的編號或雜湊, 第幾個output)
-        bytes _txBytes,		// 交易的資料
-        bytes _proof,		//
-        bytes _sigs			// 交易的簽章和收據
+        uint256 _utxoPos,// 要提領的 UTXO 在 childchain 的哪裡(第幾個block, 交易的編號或雜湊, 第幾個output)
+        bytes memory _txBytes,// 交易的資料
+        bytes memory _proof,
+        bytes memory _sigs// 交易的簽章和收據
     )
-        public
+        public payable onlyWithValue(EXIT_BOND)
     {
         uint256 blknum = _utxoPos / 1000000000;
         uint256 txindex = (_utxoPos % 1000000000) / 10000;
-        uint256 oindex = _utxoPos - blknum * 1000000000 - txindex * 10000; 
+        uint256 oindex = _utxoPos - blknum * 1000000000 - txindex * 10000;
 
         //1 Check the sender owns this UTXO.
-        var exitingTx = _txBytes.createExitingTx(oindex); // 轉換交易資料的格式
-        require(msg.sender == exitingTx.exitor);
+        PlasmaRLP.exitingTx memory exitingTx = _txBytes.createExitingTx(oindex);// 轉換交易資料的格式
+        require(msg.sender == exitingTx.exitor, "Sender must be exitor.");
 
         //2 Check the transaction was included in the chain and is correctly signed.
-        bytes32 root = childChain[blknum].root; 
-        bytes32 merkleHash = keccak256(keccak256(_txBytes), ByteUtils.slice(_sigs, 0, 130));// 收據
-        
-        require(Validate.checkSigs(keccak256(_txBytes), root, exitingTx.inputCount, _sigs));
+        bytes32 root = plasmaBlocks[blknum].root;
+        bytes32 merkleHash = keccak256(abi.encodePacked(keccak256(_txBytes), ByteUtils.slice(_sigs, 0, 130)));//收據
+        require(Validate.checkSigs(keccak256(_txBytes), root, exitingTx.inputCount, _sigs), "Signatures must match.");
         // 驗交易跟收據的簽章 ( 收據是簽章的一部份 )
         // 可參考 Validate.sol
-        
-        require(merkleHash.checkMembership(txindex, root, _proof));
+        require(merkleHash.checkMembership(txindex, root, _proof), "Transaction Merkle proof is invalid.");
         /* 
         驗 merkle tree
         證明即為merkle tree 的路徑
         可參考 Merkle.sol */
-        
-        addExitToQueue(_utxoPos, exitingTx.exitor, exitingTx.token, exitingTx.amount, childChain[blknum].timestamp);
+
+        addExitToQueue(_utxoPos, exitingTx.exitor, exitingTx.token, exitingTx.amount, plasmaBlocks[blknum].timestamp);
     }
 
     /**
@@ -233,53 +230,64 @@ contract RootChain {
     function challengeExit(
         uint256 _cUtxoPos,
         uint256 _eUtxoIndex,
-        bytes _txBytes,
-        bytes _proof,
-        bytes _sigs,
-        bytes _confirmationSig
+        bytes memory _txBytes,
+        bytes memory _proof,
+        bytes memory _sigs,
+        bytes memory _confirmationSig
     )
         public
     {
         uint256 eUtxoPos = _txBytes.getUtxoPos(_eUtxoIndex);
         uint256 txindex = (_cUtxoPos % 1000000000) / 10000;
-        bytes32 root = childChain[_cUtxoPos / 1000000000].root;
-        var txHash = keccak256(_txBytes);
-        var confirmationHash = keccak256(txHash, root);
-        var merkleHash = keccak256(txHash, _sigs);
+        bytes32 root = plasmaBlocks[_cUtxoPos / 1000000000].root;
+        bytes32 txHash = keccak256(_txBytes);
+        bytes32 confirmationHash = keccak256(abi.encodePacked(txHash, root));
+        bytes32 merkleHash = keccak256(abi.encodePacked(txHash, _sigs));
         address owner = exits[eUtxoPos].owner;
 
         // Validate the spending transaction.
-        require(owner == ECRecovery.recover(confirmationHash, _confirmationSig));
-        require(merkleHash.checkMembership(txindex, root, _proof));
+        require(owner == ECRecovery.recover(confirmationHash, _confirmationSig), "Confirmation signature must be signed by owner.");
+        require(merkleHash.checkMembership(txindex, root, _proof), "Transaction Merkle proof is invalid.");
 
         // Delete the owner but keep the amount to prevent another exit.
         delete exits[eUtxoPos].owner;
+        msg.sender.transfer(EXIT_BOND);
     }
 
     /**
-     * @dev Processes any exits that have completed the challenge period. 
+     * @dev Determines the next exit to be processed.
+     * @param _token Asset type to be exited.
+     * @return A tuple of the position and time when this exit can be processed.
+     */
+    function getNextExit(address _token) public view returns (uint256, uint256) {
+        return PriorityQueue(exitsQueues[_token]).getMin();
+    }
+
+    /**
+     * @dev Processes any exits that have completed the challenge period.
      * @param _token Token type to process.
      */
-    function finalizeExits(address _token)
-        public
-    {
+    function finalizeExits(address _token) public {
         uint256 utxoPos;
-        uint256 exitable_at;
-        (utxoPos, exitable_at) = getNextExit(_token);
-        Exit memory currentExit = exits[utxoPos];
+        uint256 exitableAt;
+        (exitableAt, utxoPos) = getNextExit(_token);
         PriorityQueue queue = PriorityQueue(exitsQueues[_token]);
-        while (exitable_at < block.timestamp) {
+        Exit memory currentExit = exits[utxoPos];
+        while (exitableAt < block.timestamp) {
             currentExit = exits[utxoPos];
 
             // FIXME: handle ERC-20 transfer
-            require(address(0) == _token);
+            require(address(0) == _token, "Token must be ETH.");
 
-            currentExit.owner.transfer(currentExit.amount);
+            if (currentExit.owner != address(0)) {
+                currentExit.owner.transfer(currentExit.amount + EXIT_BOND);
+            }
+
             queue.delMin();
             delete exits[utxoPos].owner;
 
             if (queue.currentSize() > 0) {
-                (utxoPos, exitable_at) = getNextExit(_token);
+                (exitableAt, utxoPos) = getNextExit(_token);
             } else {
                 return;
             }
@@ -287,7 +295,7 @@ contract RootChain {
     }
 
 
-    /* 
+    /*
      * Public view functions
      */
 
@@ -296,23 +304,15 @@ contract RootChain {
      * @param _blockNumber Number of the block to return.
      * @return Child chain block at the specified block number.
      */
-    function getChildChain(uint256 _blockNumber)
-        public
-        view
-        returns (bytes32, uint256)
-    {
-        return (childChain[_blockNumber].root, childChain[_blockNumber].timestamp);
+    function getPlasmaBlock(uint256 _blockNumber) public view returns (bytes32, uint256) {
+        return (plasmaBlocks[_blockNumber].root, plasmaBlocks[_blockNumber].timestamp);
     }
 
     /**
      * @dev Determines the next deposit block number.
      * @return Block number to be given to the next deposit block.
      */
-    function getDepositBlock()
-        public
-        view
-        returns (uint256)
-    {
+    function getDepositBlock() public view returns (uint256) {
         return currentChildBlock.sub(CHILD_BLOCK_INTERVAL).add(currentDepositBlock);
     }
 
@@ -321,28 +321,8 @@ contract RootChain {
      * @param _utxoPos Position of the UTXO in the chain.
      * @return A tuple representing the active exit for the given UTXO.
      */
-    function getExit(uint256 _utxoPos)
-        public
-        view
-        returns (address, address, uint256)
-    {
+    function getExit(uint256 _utxoPos) public view returns (address, address, uint256) {
         return (exits[_utxoPos].owner, exits[_utxoPos].token, exits[_utxoPos].amount);
-    }
-
-    /**
-     * @dev Determines the next exit to be processed.
-     * @param _token Asset type to be exited.
-     * @return A tuple of the position and time when this exit can be processed.
-     */
-    function getNextExit(address _token)
-        public
-        view
-        returns (uint256, uint256)
-    {
-        uint256 priority = PriorityQueue(exitsQueues[_token]).getMin();
-        uint256 utxoPos = uint256(uint128(priority));
-        uint256 exitable_at = priority >> 128;
-        return (utxoPos, exitable_at);
     }
 
 
@@ -360,7 +340,7 @@ contract RootChain {
      */
     function addExitToQueue(
         uint256 _utxoPos,
-        address _exitor,
+        address payable _exitor,
         address _token,
         uint256 _amount,
         uint256 _created_at
@@ -368,18 +348,16 @@ contract RootChain {
         private
     {
         // Check that we're exiting a known token.
-        require(exitsQueues[_token] != address(0));
+        require(exitsQueues[_token] != address(0), "Must exit a known token.");
+
+        // Check exit is valid and doesn't already exist.
+        require(_amount > 0, "Exit value cannot be zero.");
+        require(exits[_utxoPos].amount == 0, "Exit cannot already exist.");
 
         // Calculate priority.
-        uint256 exitable_at = Math.max(_created_at + 2 weeks, block.timestamp + 1 weeks);
-        uint256 priority = exitable_at << 128 | _utxoPos;
-        
-        // Check exit is valid and doesn't already exist.
-        require(_amount > 0);
-        require(exits[_utxoPos].amount == 0);
-
+        uint256 exitableAt = Math.max(_created_at + 2 weeks, block.timestamp + 1 weeks);
         PriorityQueue queue = PriorityQueue(exitsQueues[_token]);
-        queue.insert(priority);
+        queue.insert(exitableAt, _utxoPos);
 
         exits[_utxoPos] = Exit({
             owner: _exitor,

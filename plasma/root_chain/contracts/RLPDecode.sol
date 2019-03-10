@@ -1,11 +1,11 @@
-pragma solidity ^0.4.0;
+pragma solidity ^0.5.0;
 
 
 /**
  * @author Hamdi Allam hamdi.allam97@gmail.com
  * Please reach our for any questions/concerns
  */
-library RLP {
+library RLPDecode {
     uint8 constant STRING_SHORT_START = 0x80;
     uint8 constant STRING_LONG_START  = 0xb8;
     uint8 constant LIST_SHORT_START   = 0xc0;
@@ -37,7 +37,7 @@ library RLP {
     * @param item RLP encoded list in bytes
     */
     function toList(RLPItem memory item) internal pure returns (RLPItem[] memory result) {
-        require(isList(item));
+        require(isList(item), "Item must be a list.");
 
         uint items = numItems(item);
         result = new RLPItem[](items);
@@ -140,7 +140,7 @@ library RLP {
     /** RLPItem conversions into data types **/
 
     function toBoolean(RLPItem memory item) internal pure returns (bool) {
-        require(item.len == 1);
+        require(item.len == 1, "Item must be a boolean.");
         uint result;
         uint memPtr = item.memPtr;
         assembly {
@@ -150,9 +150,9 @@ library RLP {
         return result == 0 ? false : true;
     }
 
-    function toAddress(RLPItem memory item) internal pure returns (address) {
+    function toAddress(RLPItem memory item) internal pure returns (address payable) {
         // 1 byte for the length prefix according to RLP spec
-        require(item.len == 21);
+        require(item.len == 21, "Item must be 21 characters long.");
         
         uint memPtr = item.memPtr + 1; // skip the length prefix
         uint addr;
@@ -176,7 +176,7 @@ library RLP {
         return result;
     }
 
-    function toBytes(RLPItem memory item) internal pure returns (bytes) {
+    function toBytes(RLPItem memory item) internal pure returns (bytes memory) {
         uint offset = _payloadOffset(item.memPtr);
         uint len = item.len - offset; // data length
         bytes memory result = new bytes(len);
