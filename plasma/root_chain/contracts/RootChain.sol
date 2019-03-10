@@ -187,6 +187,7 @@ contract RootChain {
      * @param _proof Proof of the exiting transactions inclusion for the block specified by utxoPos.
      * @param _sigs Both transaction signatures and confirmations signatures used to verify that the exiting transaction has been confirmed.
      */
+     
     function startExit(
         uint256 _utxoPos,// 要提領的 UTXO 在 childchain 的哪裡(第幾個block, 交易的編號或雜湊, 第幾個output)
         bytes memory _txBytes,// 交易的資料
@@ -203,13 +204,17 @@ contract RootChain {
         PlasmaRLP.exitingTx memory exitingTx = _txBytes.createExitingTx(oindex);// 轉換交易資料的格式
         require(msg.sender == exitingTx.exitor, "Sender must be exitor.");
 
-        //2 Check the transaction was included in the chain and is correctly signed.
+        //Check the transaction was included in the chain and is correctly signed.
         bytes32 root = plasmaBlocks[blknum].root;
         bytes32 merkleHash = keccak256(abi.encodePacked(keccak256(_txBytes), ByteUtils.slice(_sigs, 0, 130)));//收據
+        //2 驗收據部分的簽章
         require(Validate.checkSigs(keccak256(_txBytes), root, exitingTx.inputCount, _sigs), "Signatures must match.");
-        // 驗交易跟收據的簽章 ( 收據是簽章的一部份 )
-        // 可參考 Validate.sol
+        /* 可參考 Validate.sol
+        接收者Bob只要拿自己的收據就能領錢*/
+
+        //3 確認交易有出現在該區塊
         require(merkleHash.checkMembership(txindex, root, _proof), "Transaction Merkle proof is invalid.");
+
         /* 
         驗 merkle tree
         證明即為merkle tree 的路徑
